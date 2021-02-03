@@ -28,8 +28,8 @@
 ;;; Commentary:
 
 ;; This package enabes automatic visibility toggling of various Org fragments depending on cursor position.
-;; Automatic toggling of fragments may be enabled by setting `org-appear-autoemphasis',
-;; `org-appear-autolinks', and `org-appear-autosubmarkers' custom variables to non-nil.
+;; Automatic toggling of fragments may be enabled by setting `org-appear-autoemphasis'
+;; and `org-appear-autosubmarkers' custom variables to non-nil.
 ;; By default, only `org-appear-autoemphasis' is enabled.
 ;; If Org mode custom variables that control visibility of emphasis markers, links,
 ;; or sub/superscripts are configured to show hidden parts,
@@ -56,11 +56,12 @@ Does not have an effect if `org-pretty-entities' is nil."
   :type 'boolean
   :group 'org-appear)
 
-(defcustom org-appear-autolinks nil
-  "Non-nil enables automatic toggling of links.
-Does not have an effect if `org-link-descriptive' is nil."
-  :type 'boolean
-  :group 'org-appear)
+;; TODO: Link support is currently broken
+;; (defcustom org-appear-autolinks nil
+;;   "Non-nil enables automatic toggling of links.
+;; Does not have an effect if `org-link-descriptive' is nil."
+;;   :type 'boolean
+;;   :group 'org-appear)
 
 ;;;###autoload
 (define-minor-mode org-appear-mode
@@ -90,18 +91,15 @@ Does not have an effect if `org-link-descriptive' is nil."
 			  verbatim
 			  code))
 	(subscript-fragments '(subscript
-			       superscript))
-	(link-fragments '(link)))
+			       superscript)))
 
-    ;; TODO: is there a better way to do this?
+    ;; FIXME: There must be a better way to do this
     (setq-local org-appear--prev-frag nil)
     (setq org-appear-fragments nil)	; reset
     (when (and org-hide-emphasis-markers org-appear-autoemphasis)
       (setq org-appear-fragments (append org-appear-fragments emph-fragments)))
     (when (and org-pretty-entities org-appear-autosubmarkers)
-      (setq org-appear-fragments (append org-appear-fragments subscript-fragments)))
-    (when (and org-link-descriptive org-appear-autolinks)
-      (setq org-appear-fragments (append org-appear-fragments link-fragments)))))
+      (setq org-appear-fragments (append org-appear-fragments subscript-fragments)))))
 
 (defvar-local org-appear--prev-frag nil
   "Previous fragment that surrounded the cursor, or nil if the cursor was not
@@ -144,47 +142,22 @@ Return nil if element is not supported by `org-appear-mode'."
       nil)))
 
 (defun org-appear--parse-elem (elem)
-  "Return start, end, visible start, and visible end positions of element ELEM.
-If ELEM is not recognised by the package, return nil."
-  (let* ((elem-type (car elem))
-	 (link-subtype (org-element-property :type elem))
-	 (elem-tag (cond ((memq elem-type '(bold
-					    italic
-					    underline
-					    strike-through
-					    verbatim
-					    code))
-			  'emph)
-			 ((memq elem-type '(subscript
-					    superscript))
-			  'script)
-			 ;; Nothing to hide in cite links
-			 ((and (not (string= link-subtype "cite"))
-			       (eq elem-type 'link))
-			  'link)
-			 (t nil))))
-    (when elem-tag			; Exit immediately if not valid ELEM
-      (let* ((elem-start (org-element-property :begin elem))
-	     (elem-end (org-element-property :end elem))
-	     (elem-content-start (org-element-property :contents-begin elem))
-	     (elem-content-end (org-element-property :contents-end elem))
-	     ;; Some elements have extra spaces at the end
-	     ;; The number of spaces is stored in the post-blank property
-	     (post-elem-spaces (org-element-property :post-blank elem))
-	     (elem-end-real (- elem-end post-elem-spaces)))
-	;; Verbatim fragments, code fragments, and link fragments without description
-	;; do not have contents-begin and contents-end properties,
-	;; hence the hard-coding of visible start/end
-	(list 'start elem-start
-	      'end elem-end-real
-	      'visible-start (pcase elem-tag
-			       ('emph (1+ elem-start))
-			       ('script elem-content-start)
-			       ('link (or elem-content-start (+ elem-start 2))))
-	      'visible-end (pcase elem-tag
-			     ('emph (1- elem-end-real))
-			     ('script elem-content-end)
-			     ('link (or elem-content-end (- elem-end-real 2)))))))))
+  "Return start and end positions and parent type of element ELEM."
+  (let ((elem-start (org-element-property :begin elem))
+	(elem-end (org-element-property :end elem))
+	(elem-parent (org-element-property :parent elem)))
+    (list 'start elem-start
+	  'end elem-end
+	  'parent (car elem-parent))))
+
+(defun org-appear--nestedp (elem)
+  "Return nil if ELEM is not inside another emphasised fragment."
+  (member (plist-get elem 'parent) '(bold
+				     italic
+				     underline
+				     strike-through
+				     verbatim
+				     code)))
 
 (defun org-appear--toggle-lock-and-flush (frag)
   "Disable `jit-lock-mode' if it was enabled.
@@ -195,32 +168,33 @@ Enable it otherwise, flushing previous fragment FRAG."
     ;; Flushing is necessary to make sure previous FRAG
     ;; is refontified if it was just destroyed
     (when frag
-      (font-lock-flush (max (org-element-property :begin frag) (point-min))
-		       (min (org-element-property :end frag) (point-max))))))
+      (save-excursion
+	(font-lock-fontify-region (max (org-element-property :begin frag) (point-min))
+				  (min (org-element-property :end frag) (point-max)))))))
 
 (defun org-appear--show-invisible (frag)
   "Silently remove invisible property from invisible elements inside fragment FRAG."
-  (let ((frag-props (org-appear--parse-elem frag)))
-    (when frag-props			; Exit immediately if not valid FRAG
-      (let ((start (plist-get frag-props 'start))
-	    (end (plist-get frag-props 'end))
-	    (visible-start (plist-get frag-props 'visible-start))
-	    (visible-end (plist-get frag-props 'visible-end)))
-	(with-silent-modifications
-	  (remove-text-properties start visible-start '(invisible org-link))
-	  (remove-text-properties visible-end end '(invisible org-link)))))))
+  (let ((elem-at-frag (org-appear--parse-elem frag)))
+    (when elem-at-frag			    ; Exit immediately if not valid FRAG
+      (let ((start (plist-get elem-at-frag 'start))
+	    (end (plist-get elem-at-frag 'end))
+	    (org-hide-emphasis-markers)
+	    (org-pretty-entities)
+	    (font-lock-extend-region-functions
+	     (if (org-appear--nestedp elem-at-frag)
+		 font-lock-extend-region-functions
+	       nil)))
+	;; HACK: (1- start) makes sure that font-lock is aware that
+	;;       it is looking at an emphasised fragment
+	(font-lock-fontify-region (1- start) end)))))
 
 (defun org-appear--hide-invisible (frag)
   "Silently add invisible property to invisible elements inside fragment FRAG."
-  (let ((frag-props (org-appear--parse-elem frag)))
-    (when frag-props			; Exit immediately if not valid FRAG
-      (let ((start (plist-get frag-props 'start))
-	    (end (plist-get frag-props 'end))
-	    (visible-start (plist-get frag-props 'visible-start))
-	    (visible-end (plist-get frag-props 'visible-end)))
-	(with-silent-modifications
-	  (put-text-property start visible-start 'invisible 'org-link)
-	  (put-text-property visible-end end 'invisible 'org-link))))))
+  (let ((elem-at-frag (org-appear--parse-elem frag)))
+    (when elem-at-frag		  ; Exit immediately if not valid FRAG
+      (let ((start (plist-get elem-at-frag 'start))
+	    (end (plist-get elem-at-frag 'end)))
+	(font-lock-fontify-region start end)))))
 
 (provide 'org-appear)
 ;;; org-appear.el ends here
