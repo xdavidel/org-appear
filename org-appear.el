@@ -64,6 +64,13 @@ Does not have an effect if `org-link-descriptive' is nil."
   :type 'boolean
   :group 'org-appear)
 
+;; FIXME: This will not be on by default in the final version
+(defcustom org-appear-autostamps t
+  "Non-nil enables automatic toggling of custom time stamps.
+Does not have an effect if `org-display-custom-times' is nil."
+  :type 'boolean
+  :group 'org-appear)
+
 ;;;###autoload
 (define-minor-mode org-appear-mode
   "A minor mode that automatically toggles elements in Org mode."
@@ -97,7 +104,8 @@ on an element.")
 			     code))
 	(script-elements '(subscript
 			   superscript))
-	(link-elements '(link)))
+	(link-elements '(link))
+	(timestamps '(timestamp)))
 
     ;; HACK: is there a better way to do this?
     (setq-local org-appear--prev-elem nil)
@@ -107,7 +115,9 @@ on an element.")
     (when (and org-pretty-entities org-appear-autosubmarkers)
       (setq org-appear-elements (append org-appear-elements script-elements)))
     (when (and org-link-descriptive org-appear-autolinks)
-      (setq org-appear-elements (append org-appear-elements link-elements)))))
+      (setq org-appear-elements (append org-appear-elements link-elements)))
+    (when (and org-display-custom-times org-appear-autostamps)
+      (setq org-appear-elements (append org-appear-elements timestamps)))))
 
 (defun org-appear--post-cmd ()
   "This function is executed by `post-command-hook' in `org-appear-mode'.
@@ -175,6 +185,8 @@ Return nil if element is not supported by `org-appear-mode'."
 			 ((and (eq elem-type 'link)
 			       (not (string= link-subtype "cite")))
 			  'link)
+			 ((eq elem-type 'timestamp)
+			  'timestamp)
 			 (t nil)))
 	 (elem-start (org-element-property :begin elem))
 	 (elem-end (org-element-property :end elem))
@@ -192,10 +204,12 @@ Return nil if element is not supported by `org-appear-mode'."
 	     :visible-start ,(pcase elem-tag
 			       ('emph (1+ elem-start))
 			       ('script elem-content-start)
+			       ('timestamp nil)
 			       ('link (or elem-content-start (+ elem-start 2))))
 	     :visible-end ,(pcase elem-tag
 			     ('emph (1- elem-end-real))
 			     ('script elem-content-end)
+			     ('timestamp nil)
 			     ('link (or elem-content-end (- elem-end-real 2))))
 	     :parent ,elem-parent)))
 
@@ -207,9 +221,12 @@ Return nil if element is not supported by `org-appear-mode'."
 	 (visible-start (plist-get elem-at-point :visible-start))
 	 (visible-end (plist-get elem-at-point :visible-end))
 	 (parent (plist-get elem-at-point :parent)))
-    (with-silent-modifications
-      (remove-text-properties start visible-start '(invisible org-link))
-      (remove-text-properties visible-end end '(invisible org-link)))
+    (if visible-start
+	(with-silent-modifications
+	  (remove-text-properties start visible-start '(invisible org-link))
+	  (remove-text-properties visible-end end '(invisible org-link)))
+      (with-silent-modifications
+	(remove-text-properties start end '(display t))))
     ;; To minimise distraction from moving text,
     ;; always keep parent emphasis markers visible
     (when parent
